@@ -52,17 +52,24 @@ class WebSearchOutput(BaseModel):
     pattern_insight: str = Field(description="What both precedents teach us about this situation")
     key_unknown: str = Field(description="What is missing from history that we don't know yet")
 
+class OrchestratorOutput(BaseModel):
+    intent: str = Field(description="'schedule' if they ask to schedule an alert, 'news' for finding news/market info")
+
 # -----------------
 # Node: Orchestrator
 # -----------------
-async def orchestrator_node(state: AgentState):
+async def orchestrator_node(state: AgentState, llm: ChatOpenAI):
     """
-    The Orchestrator doesn't call tools itself. Its job is to figure out to launch the News Agent initially.
-    In our static graph, the flow automatically goes from Orchestrator -> News,
-    so this node essentially just normalizes the input if needed.
+    The Orchestrator defines the entry point intent (News or Schedule)
     """
     print(f"[Orchestrator] Received user message: {state['user_message']}")
-    return state
+    extractor = llm.with_structured_output(OrchestratorOutput)
+    res: OrchestratorOutput = await extractor.ainvoke([
+        SystemMessage("Determine the user's intent: Is it a request to schedule an alert, or a request to lookup news?"),
+        HumanMessage(state['user_message'])
+    ])
+    return {"intent": res.intent}
+
 
 # -----------------
 # Node: News Agent
@@ -267,6 +274,8 @@ Write a Telegram alert. STRICT rules:
     ])
     
     final_text = response.content
+    final_text += "\n\n💡 Tip: You can create a cron job to monitor this by replying 'Schedule this every X hours/minutes'!"
+    
     chat_id = state.get("chat_id")
     
     # Fire tools
@@ -319,7 +328,47 @@ async def log_and_stop_node(state: AgentState, tools: dict):
     if chat_id:
         if state.get("is_duplicate", False):
              msg = "Event is a duplicate, ignoring."
+        msg += "\n\n💡 Tip: You can create a cron job to monitor this by replying 'Schedule this every X hours/minutes'!"
         if telegram_tool:
             await telegram_tool.ainvoke({"chat_id": chat_id, "message": msg})
         
     return {"final_response": "Stopped. " + msg}
+
+# -----------------
+# Node: Scheduler Agent
+# -----------------
+async def scheduler_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
+    print("[Scheduler Agent] Scheduling task...")
+    set_schedule_tool = tools.get("set_schedule")
+    pause_schedule_tool = tools.get("pause_schedule")
+    telegram_tool = tools.get("send_telegram")
+    
+    agent_llm = llm.bind_tools([set_schedule_tool, pause_schedule_tool])
+    
+    messages = [
+        SystemMessage(f"You schedule tasks. Convert their time request to a cron expression, then call set_schedule tool with chat_id: {state['chat_id']}. If they ask to pause, call pause_schedule. Afterwards, formulate a friendly Telegram response confirming the action."),
+        HumanMessage(state['user_message'])
+    ]
+    
+    response = await agent_llm.ainvoke(messages)
+    messages.append(response)
+    
+    # Process tools 
+    for tool_call in response.tool_calls:
+        if tool_call["name"] == "set_schedule":
+            tool_msg = await set_schedule_tool.ainvoke(tool_call["args"])
+        elif tool_call["name"] == "pause_schedule":
+            tool_msg = await pause_schedule_tool.ainvoke(tool_call["args"])
+        else:
+            tool_msg = f"Unknown tool: {tool_call['name']}"
+            
+        messages.append(ToolMessage(content=str(tool_msg), name=tool_call["name"], tool_call_id=tool_call["id"]))
+
+    if response.tool_calls:
+        response = await agent_llm.ainvoke(messages)
+        
+    final_text = response.content
+    if telegram_tool and state.get('chat_id'):
+        await telegram_tool.ainvoke({"chat_id": state['chat_id'], "message": final_text})
+        
+    return {"final_response": final_text}

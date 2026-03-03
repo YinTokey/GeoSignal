@@ -10,6 +10,7 @@ class AgentState(TypedDict):
     messages: List[BaseMessage]
     
     # Orchestrator routing helper
+    intent: Optional[str]
     severity: Optional[float]
     is_duplicate: Optional[bool]
     
