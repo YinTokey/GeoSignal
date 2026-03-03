@@ -1,21 +1,61 @@
-from typing import Literal
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.pydantic_v1 import BaseModel, Field
+from typing import Dict, List, Any, Optional
+from pydantic import BaseModel, Field
 
 from agents.state import AgentState
 
-# We will define what the News Agent should return
+# -----------------
+# Agent Output Models
+# -----------------
+
+class AffectedAsset(BaseModel):
+    asset_name: str = Field(description="Name of the asset (e.g. 'oil', 'BTC')")
+    impact_description: str = Field(description="How it is impacted (e.g. 'DIRECT - spike')")
+
 class NewsOutput(BaseModel):
-    event_type: str = Field(description="The type of event (e.g. 'earn_miss', 'geopolitical', 'macro', 'company_scandal')")
-    severity: int = Field(description="Integer severity from 1 to 10")
-    headline: str = Field(description="A concise 1-sentence headline of the event")
-    affected_assets: str = Field(description="Assets or sectors primarily affected by the news")
+    is_significant: bool
+    is_duplicate: bool
+    severity: float         
+    headline: str            
+    what_happened: str       
+    why_it_matters: str      
+    event_type: str          
+    affected_assets: List[AffectedAsset]
+    escalation_signals: List[str] 
+
+class MarketAsset(BaseModel):
+    asset_name: str = Field(description="Name of the asset (e.g. 'BTC', 'oil')")
+    price: str = Field(description="Current price string")
+    change_1h: str = Field(description="1 hour change percentage")
+    signal: str = Field(description="What this means (e.g. 'dumping hard')")
+
+class MarketOutput(BaseModel):
+    snapshot_time: str = Field(description="ISO timestamp of the snapshot")
+    market_mood: str = Field(description="Overall sentiment description")
+    assets: List[MarketAsset] = Field(default_factory=list, description="List of key assets and their market state")
+    fear_greed: str = Field(description="Estimated fear/greed metric")
+    liquidations: str = Field(description="Info on liquidations if available")
+    volume_anomaly: str = Field(description="Any notable volume anomalies")
+    summary: str = Field(description="Overall interpretation of what the market is doing right now")
+
+class WebSearchMatch(BaseModel):
+    event: str = Field(description="Name of the historical event")
+    similarity_reason: str = Field(description="Why it is similar to the current event")
+    key_difference: str = Field(description="Crucial differences to keep in mind")
+    what_happened_to_markets: str = Field(description="Factual breakdown of asset reactions")
+    recovery_trigger: str = Field(description="What caused the market to recover")
+
+class WebSearchOutput(BaseModel):
+    best_match: WebSearchMatch = Field(description="The closest historical precedent")
+    second_match: Optional[WebSearchMatch] = Field(None, description="A secondary precedent")
+    pattern_insight: str = Field(description="What both precedents teach us about this situation")
+    key_unknown: str = Field(description="What is missing from history that we don't know yet")
 
 # -----------------
 # Node: Orchestrator
 # -----------------
-def orchestrator_node(state: AgentState):
+async def orchestrator_node(state: AgentState):
     """
     The Orchestrator doesn't call tools itself. Its job is to figure out to launch the News Agent initially.
     In our static graph, the flow automatically goes from Orchestrator -> News,
@@ -27,19 +67,27 @@ def orchestrator_node(state: AgentState):
 # -----------------
 # Node: News Agent
 # -----------------
-def news_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
+async def news_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     """
     The News Agent calls `search_news` and `check_duplicate`.
     """
     print("[News Agent] Analyzing news for message...")
     search_news_tool = tools.get("search_news")
     check_duplicate_tool = tools.get("check_duplicate")
+    if not search_news_tool or not check_duplicate_tool:
+        raise RuntimeError("Required tools missing: search_news and/or check_duplicate")
     
     # Let the LLM use the tools to find out what's going on
     system_prompt = SystemMessage(content='''You are a Financial News Agent. 
     1. Use the search_news tool to find out what the user is talking about.
     2. Then, use the check_duplicate tool to see if the headline has already been processed.
-    Return your final understanding.
+    
+    You must figure out:
+    1. What happened (fact)
+    2. Why it matters (context)
+    3. What it means (interpretation)
+    
+    Return your final understanding so it can be extracted into the detailed schema.
     ''')
     
     # We bind tools
@@ -49,8 +97,9 @@ def news_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     # For brevity in this implementation, we will use a small inline tool-calling loop.
     messages = [system_prompt, HumanMessage(content=state['user_message'])]
     
+    duplicate_result = None
     while True:
-        response = agent_llm.invoke(messages)
+        response = await agent_llm.ainvoke(messages)
         messages.append(response)
         
         if not response.tool_calls:
@@ -62,122 +111,146 @@ def news_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
             print(f"[News Agent] Calling {tool_name} with {tool_args}")
             
             if tool_name == "search_news":
-                tool_msg = search_news_tool.invoke(tool_args)
+                tool_msg = await search_news_tool.ainvoke(tool_args)
             elif tool_name == "check_duplicate":
-                tool_msg = check_duplicate_tool.invoke(tool_args)
+                tool_msg = await check_duplicate_tool.ainvoke(tool_args)
+                duplicate_result = str(tool_msg).strip().lower()
             else:
                 tool_msg = f"Unknown tool: {tool_name}"
-                
-            messages.append({"role": "tool", "name": tool_name, "content": str(tool_msg), "tool_call_id": tool_call["id"]})
+
+            messages.append(
+                ToolMessage(
+                    content=str(tool_msg),
+                    name=tool_name,
+                    tool_call_id=tool_call["id"],
+                )
+            )
 
     # Now we extract the structured output from the final text
     extractor_llm = llm.with_structured_output(NewsOutput)
-    structured_news = extractor_llm.invoke(
-        [SystemMessage(content="Extract the event details from the context."), messages[-1]]
+    structured_news: NewsOutput = await extractor_llm.ainvoke(
+        [SystemMessage(content="Extract the detailed event information into the required schema. Ensure you answer what happened, why it matters, and what it means."), messages[-1]]
     )
     
-    # Heuristic for duplicate (if the LLM determined it was in the text)
-    is_dupe = "True" in str(messages) # simplistic check
+    # Determine duplicate directly from tool response (not LLM text heuristics).
+    is_dupe = duplicate_result == "true"
+    if is_dupe:
+        structured_news.is_duplicate = True
     
     return {
-        "event_type": structured_news.event_type,
         "severity": structured_news.severity,
-        "headline": structured_news.headline,
-        "affected_assets": structured_news.affected_assets,
-        "is_duplicate": is_dupe
+        "is_duplicate": structured_news.is_duplicate,
+        "news_data": structured_news.model_dump()
     }
 
 # -----------------
 # Edge: Route after News
 # -----------------
-def route_after_news(state: AgentState) -> Literal["market", "log_and_stop"]:
+def route_after_news(state: AgentState) -> list[str]:
     print(f"[Router] Severity is {state['severity']}, Duplicate: {state.get('is_duplicate')}")
-    if getattr(state, 'is_duplicate', False):
+    if state.get("is_duplicate", False):
         print("[Router] Duplicate detected. Stopping.")
-        return "log_and_stop"
+        return ["LogAndStop"]
         
     severity = state.get("severity", 0)
-    if severity >= 5:
+    if severity >= 1:
          print("[Router] High severity. Proceeding to Market & WebSearch.")
-         return "market" # We will route to a parallel node
+         return ["MarketAgent", "WebSearchAgent"]
     else:
          print("[Router] Low severity. Stopping.")
-         return "log_and_stop"
+         return ["LogAndStop"]
 
 # -----------------
 # Node: Market Agent
 # -----------------
-def market_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
+async def market_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     print("[Market Agent] Fetching market snapshot...")
     market_tool = tools.get("get_market_snapshot")
+    if not market_tool:
+        raise RuntimeError("Required tool missing: get_market_snapshot")
     
-    assets = state.get("affected_assets", "general market")
-    result = market_tool.invoke({"asset_or_market": assets})
+    assets_list = state.get("news_data", {}).get("affected_assets", [])
+    assets_str = ", ".join([a.get("asset_name", "") for a in assets_list]) if assets_list else "general market"
     
-    # Synthesize the raw output into a clean string
-    response = llm.invoke([
-        SystemMessage(content="You are a market analyst. Summarize current conditions based on the tool data."),
+    result = await market_tool.ainvoke({"asset_or_market": assets_str})
+    
+    # Synthesize the raw output into the clean structured MarketOutput model
+    extract_llm = llm.with_structured_output(MarketOutput)
+    structured_market: MarketOutput = await extract_llm.ainvoke([
+        SystemMessage(content="""You are a market analyst. Summarize current conditions based on the tool data.
+        You must ensure you answer:
+        1. What happened to these assets (fact)
+        2. Why it matters (context)
+        3. What it means (interpretation in the summary)"""),
         HumanMessage(content=str(result))
     ])
     
     print("[Market Agent] Complete.")
-    return {"market_snapshot": response.content}
+    return {"market_data": structured_market.model_dump()}
 
 # -----------------
 # Node: WebSearch Agent
 # -----------------
-def websearch_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
+async def websearch_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     print("[WebSearch Agent] Finding historical precedents...")
     precedents_tool = tools.get("search_precedents")
     recovery_tool = tools.get("search_recovery_timeline")
+    if not precedents_tool or not recovery_tool:
+        raise RuntimeError("Required tools missing: search_precedents and/or search_recovery_timeline")
     
-    event_type = state.get("event_type", "market event")
+    event_type = state.get("news_data", {}).get("event_type", "market event")
     
-    p_result = precedents_tool.invoke({"event_type": event_type, "geography": "global"})
-    r_result = recovery_tool.invoke({"event_type": event_type})
+    p_result = await precedents_tool.ainvoke({"event_type": event_type, "geography": "global"})
+    r_result = await recovery_tool.ainvoke({"event_type": event_type})
     
-    # Synthesize
-    p_summary = llm.invoke([
-        SystemMessage(content="Summarize historical precedents."),
-        HumanMessage(content=str(p_result))
-    ])
-    r_summary = llm.invoke([
-        SystemMessage(content="Summarize recovery timelines."),
-        HumanMessage(content=str(r_result))
+    # Synthesize into structured output
+    extract_llm = llm.with_structured_output(WebSearchOutput)
+    structured_web: WebSearchOutput = await extract_llm.ainvoke([
+        SystemMessage(content="""You are a historical event analyst. Find historical precedents and timelines matching this context.
+        Filter the data to answer:
+        1. What happened before (fact)
+        2. Why it is similar/matters (context)
+        3. What it means for the current pattern (interpretation)"""),
+        HumanMessage(content=f"Precedents:\n{p_result}\n\nRecovery:\n{r_result}")
     ])
     
     print("[WebSearch Agent] Complete.")
-    return {
-        "historical_precedents": p_summary.content,
-        "recovery_timeline": r_summary.content
-    }
+    return {"websearch_data": structured_web.model_dump()}
 
 # -----------------
 # Node: Synthesis Agent
 # -----------------
-def synthesis_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
+async def synthesis_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     print("[Synthesis Agent] Synthesizing final report...")
     telegram_tool = tools.get("send_telegram")
     log_tool = tools.get("log_event")
+    if not log_tool:
+        raise RuntimeError("Required tool missing: log_event")
+    
+    import json
+    news_json = json.dumps(state.get("news_data", {}), indent=2)
+    market_json = json.dumps(state.get("market_data", {}), indent=2)
+    web_json = json.dumps(state.get("websearch_data", {}), indent=2)
     
     # Build context
     context = f"""
     Original Request: {state['user_message']}
     
-    News Event: {state['headline']} (Severity: {state['severity']}, Assets: {state['affected_assets']})
+    --- NEWS CONTEXT ---
+    {news_json}
     
-    Market Snapshot:
-    {state.get('market_snapshot', 'N/A')}
+    --- MARKET CONTEXT ---
+    {market_json}
     
-    Historical Precedents:
-    {state.get('historical_precedents', 'N/A')}
-    
-    Recovery Timeline:
-    {state.get('recovery_timeline', 'N/A')}
+    --- HISTORICAL PRECEDENTS ---
+    {web_json}
     """
     
-    response = llm.invoke([
-        SystemMessage(content="You are the lead Synthesis Agent. Read the compiled data from sub-agents and formulate a cohesive, professional 2-3 paragraph telegram message for the user. Do format it nicely with bolding or emojis."),
+    response = await llm.ainvoke([
+        SystemMessage(content="""You are the lead Synthesis Agent. Read the compiled JSON data from sub-agents.
+        Formulate a cohesive, professional 2-3 paragraph telegram message for the user. 
+        Format it nicely with bolding, bullet points, and emojis. 
+        Clearly delineate What Happened, Why It Matters, and What It Means."""),
         HumanMessage(content=context)
     ])
     
@@ -186,16 +259,19 @@ def synthesis_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     
     # Fire tools
     print("[Synthesis Agent] Dispatching tools...")
-    if chat_id:
-        telegram_tool.invoke({"chat_id": chat_id, "message": final_text})
+    if chat_id and telegram_tool:
+        await telegram_tool.ainvoke({"chat_id": chat_id, "message": final_text})
         
     try:
-        import json
-        dump = json.dumps({"market": state.get('market_snapshot'), "history": state.get('historical_precedents')})
-        log_tool.invoke({
-            "headline": state.get('headline', 'Unknown'),
-            "severity": state.get('severity', 0),
-            "event_type": state.get('event_type', 'Unknown'),
+        dump = json.dumps({
+            "market_data": state.get('market_data'), 
+            "websearch_data": state.get('websearch_data')
+        })
+        n_data = state.get("news_data", {})
+        await log_tool.ainvoke({
+            "headline": n_data.get('headline', 'Unknown'),
+            "severity": n_data.get('severity', 0),
+            "event_type": n_data.get('event_type', 'Unknown'),
             "raw_data_json": dump
         })
     except Exception as e:
@@ -207,15 +283,18 @@ def synthesis_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
 # -----------------
 # Node: Log and Stop
 # -----------------
-def log_and_stop_node(state: AgentState, tools: dict):
+async def log_and_stop_node(state: AgentState, tools: dict):
     print("[Terminal Node] Logging minor/duplicate event and stopping.")
     log_tool = tools.get("log_event")
+    if not log_tool:
+        raise RuntimeError("Required tool missing: log_event")
     
     try:
-        log_tool.invoke({
-            "headline": state.get('headline', 'Unknown'),
-            "severity": state.get('severity', 0),
-            "event_type": state.get('event_type', 'Unknown'),
+        n_data = state.get("news_data", {})
+        await log_tool.ainvoke({
+            "headline": n_data.get('headline', 'Unknown'),
+            "severity": n_data.get('severity', 0),
+            "event_type": n_data.get('event_type', 'Unknown'),
             "raw_data_json": "{}"
         })
     except:
@@ -224,10 +303,11 @@ def log_and_stop_node(state: AgentState, tools: dict):
     # Send a small message back via telegram to let user know it was ignored
     telegram_tool = tools.get("send_telegram")
     chat_id = state.get('chat_id')
+    msg = f"Event logged but not escalated (Severity {state.get('severity')})."
     if chat_id:
-        msg = f"Event logged but not escalated (Severity {state.get('severity')})."
-        if getattr(state, 'is_duplicate', False):
+        if state.get("is_duplicate", False):
              msg = "Event is a duplicate, ignoring."
-        telegram_tool.invoke({"chat_id": chat_id, "message": msg})
+        if telegram_tool:
+            await telegram_tool.ainvoke({"chat_id": chat_id, "message": msg})
         
     return {"final_response": "Stopped. " + msg}

@@ -7,6 +7,7 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
 
 from agents.graph import build_agent_graph
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -43,7 +44,7 @@ async def init_agent():
     print(f"Loaded {len(tools)} tools from MCP Server.")
     
     # Initialize LLM
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+    llm = ChatOpenAI(model="gpt-5-mini")
     
     # Create the Multi-Agent graph
     _reusable_agent = build_agent_graph(llm, tools)
@@ -75,3 +76,4 @@ async def run_agent(chat_id: int, message: str) -> None:
         print("Final Agent State completed.")
     except Exception as e:
         print(f"Agent invocation failed: {e}")
+        raise

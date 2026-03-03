@@ -1,4 +1,4 @@
-from typing import TypedDict, Optional, List
+from typing import TypedDict, Optional, List, Dict, Any
 from langchain_core.messages import BaseMessage
 
 class AgentState(TypedDict):
@@ -9,19 +9,14 @@ class AgentState(TypedDict):
     # Internal message history for the orchestrator (if needed)
     messages: List[BaseMessage]
     
-    # News Agent outputs
-    event_type: Optional[str]
-    severity: Optional[int]
-    headline: Optional[str]
-    affected_assets: Optional[str]
+    # Orchestrator routing helper
+    severity: Optional[float]
     is_duplicate: Optional[bool]
     
-    # Market Agent outputs
-    market_snapshot: Optional[str]
-    
-    # WebSearch Agent outputs
-    historical_precedents: Optional[str]
-    recovery_timeline: Optional[str]
+    # Agent Outputs stored as structured dictionaries
+    news_data: Optional[Dict[str, Any]]
+    market_data: Optional[Dict[str, Any]]
+    websearch_data: Optional[Dict[str, Any]]
     
     # Final Result
     final_response: Optional[str]

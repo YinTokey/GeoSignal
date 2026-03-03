@@ -29,33 +29,30 @@ def build_agent_graph(llm: ChatOpenAI, raw_tools: list):
     # Define our graph structure using the explicitly typed AgentState
     builder = StateGraph(AgentState)
     
+    from functools import partial
+    
     # 1. Add Nodes
-    builder.add_node("Orchestrator", lambda s: orchestrator_node(s))
-    builder.add_node("NewsAgent", lambda s: news_agent_node(s, llm, tool_map))
-    builder.add_node("MarketAgent", lambda s: market_agent_node(s, llm, tool_map))
-    builder.add_node("WebSearchAgent", lambda s: websearch_agent_node(s, llm, tool_map))
-    builder.add_node("SynthesisAgent", lambda s: synthesis_agent_node(s, llm, tool_map))
-    builder.add_node("LogAndStop", lambda s: log_and_stop_node(s, tool_map))
+    builder.add_node("Orchestrator", orchestrator_node)
+    builder.add_node("NewsAgent", partial(news_agent_node, llm=llm, tools=tool_map))
+    builder.add_node("MarketAgent", partial(market_agent_node, llm=llm, tools=tool_map))
+    builder.add_node("WebSearchAgent", partial(websearch_agent_node, llm=llm, tools=tool_map))
+    builder.add_node("SynthesisAgent", partial(synthesis_agent_node, llm=llm, tools=tool_map))
+    builder.add_node("LogAndStop", partial(log_and_stop_node, tools=tool_map))
     
     # 2. Add Flow Edges
     builder.add_edge(START, "Orchestrator")
     builder.add_edge("Orchestrator", "NewsAgent")
     
     # The NewsAgent branches conditionally based on severity and duplicates
-    builder.add_conditional_edges(
-        "NewsAgent",
-        route_after_news,
-        {
-            "market": ["MarketAgent", "WebSearchAgent"],
-            "log_and_stop": "LogAndStop"
-        }
-    )
+    # route_after_news now returns ["MarketAgent", "WebSearchAgent"] or ["LogAndStop"] directly
+    builder.add_conditional_edges("NewsAgent", route_after_news, ["MarketAgent", "WebSearchAgent", "LogAndStop"])
     
     # If it routed to LogAndStop, we end.
     builder.add_edge("LogAndStop", END)
     
     # Parallel edges from Market and WebSearch converge to Synthesis
-    builder.add_edge(["MarketAgent", "WebSearchAgent"], "SynthesisAgent")
+    builder.add_edge("MarketAgent", "SynthesisAgent")
+    builder.add_edge("WebSearchAgent", "SynthesisAgent")
     
     # Synthesis ends the flow
     builder.add_edge("SynthesisAgent", END)
