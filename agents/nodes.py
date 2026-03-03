@@ -247,10 +247,22 @@ async def synthesis_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     """
     
     response = await llm.ainvoke([
-        SystemMessage(content="""You are the lead Synthesis Agent. Read the compiled JSON data from sub-agents.
-        Formulate a cohesive, professional 2-3 paragraph telegram message for the user. 
-        Format it nicely with bolding, bullet points, and emojis. 
-        Clearly delineate What Happened, Why It Matters, and What It Means."""),
+        SystemMessage(content="""You are GeoSignal's synthesis agent.
+Write a Telegram alert. STRICT rules:
+- MAX 150 words total
+- No preamble, no sign-off
+- Use this exact structure, nothing else:
+
+🚨 [EVENT TYPE] - Severity [X]/10
+
+[1 concise sentence about what happened]
+
+[1 concise sentence about why it matters]
+
+📊 Asset Impact:
+[List up to 4 affected assets based on context: [Asset]: [▲/▼] [reason, 5 words max]]
+
+"""),
         HumanMessage(content=context)
     ])
     
