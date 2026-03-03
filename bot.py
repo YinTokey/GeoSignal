@@ -35,14 +35,14 @@ async def process_message(message: Message) -> None:
     # Send a temporary "thinking" message or chat action
     processing_msg = await message.answer("Thinking...")
     print("Processing message: ", message.text)
-    await message.answer(f"This is testing")
 
-    # try:
-    #     # Call the tool-enabled agent.
-    #     response_text = await run_agent(message.text)
-    #     await processing_msg.edit_text(response_text)
-    # except Exception as e:
-    #     await processing_msg.edit_text(f"Sorry, an error occurred: {e}")
+    try:
+        # Call the multi-agent graph with chat_id so Synthesis can reply via tool
+        # Wait for the task to complete
+        await run_agent(chat_id=message.chat.id, message=message.text)
+        await processing_msg.delete()
+    except Exception as e:
+        await processing_msg.edit_text(f"Sorry, an error occurred in the agent: {e}")
 
 async def start_telegram_bot():
     """Starts the bot polling. To be run as a background task."""

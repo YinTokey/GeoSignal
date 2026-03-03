@@ -12,6 +12,7 @@ dependencies = [
     "langchain-openai>=1.1.10",
     "mcp>=1.26.0",
     "openai>=2.24.0",
+    "pymongo>=4.16.0",
     "python-dotenv>=1.2.2",
     "tavily-python>=0.7.22",
     "uvicorn>=0.41.0",

@@ -5,19 +5,10 @@ from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.tools import load_mcp_tools
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
-from langgraph.prebuilt import create_react_agent
-from langchain_core.messages import HumanMessage
-from dotenv import load_dotenv
+
+from agents.graph import build_agent_graph
 
 load_dotenv()
-
-# The system prompt to instruct the agent to decompose, search, and synthesize
-SYSTEM_PROMPT = """You are a helpful and intelligent AI agent. 
-When asked a question, you should:
-1. Understand and decompose the user's request into actionable search tasks.
-2. Use the provided tools (e.g., Tavily Search via MCP) to find accurate, up-to-date information.
-3. Synthesize the findings into a clear, cohesive, and concise response.
-Always be helpful and polite."""
 
 # Store the global session to reuse it across telegram messages
 _mcp_session: Optional[ClientSession] = None
@@ -54,8 +45,8 @@ async def init_agent():
     # Initialize LLM
     llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
     
-    # Create the ReAct agent
-    _reusable_agent = create_react_agent(llm, tools, state_modifier=SYSTEM_PROMPT)
+    # Create the Multi-Agent graph
+    _reusable_agent = build_agent_graph(llm, tools)
     return _reusable_agent
 
 async def close_agent():
@@ -67,19 +58,20 @@ async def close_agent():
         await _mcp_client_ctx.__aexit__(None, None, None)
     print("Agent connection closed.")
 
-async def run_agent(message: str) -> str:
-    """Passes a string message to the agent and gets the response."""
+async def run_agent(chat_id: int, message: str) -> None:
+    """Passes a string message and chat ID to the multi-agent graph."""
     agent = await init_agent()
     
-    print(f"Agent processing message: {message}")
-    inputs = {"messages": [HumanMessage(content=message)]}
+    print(f"Agent processing message: '{message}' for chat {chat_id}")
     
-    # Stream or invoke
-    final_response = ""
-    async for chunk in agent.astream(inputs, stream_mode="values"):
-        message_obj = chunk["messages"][-1]
-        final_response = message_obj.content
-        # You can see the tool calls and intermediate steps here if needed
-        # print("Step:", message_obj)
-        
-    return final_response
+    initial_state = {
+        "chat_id": chat_id,
+        "user_message": message
+    }
+    
+    # Async invoke
+    try:
+        final_state = await agent.ainvoke(initial_state)
+        print("Final Agent State completed.")
+    except Exception as e:
+        print(f"Agent invocation failed: {e}")
