@@ -80,4 +80,15 @@ graph TD
 - **Market Agent**: Looks into the financial market snapshot to measure the impact of breaking events.
 - **Web Search Agent**: Identifies matching historical precedents and recovery timelines for market events.
 - **Synthesis Agent**: Combines outputs from the News, Market, and Web Search agents into a cohesive Telegram alert and logs the event.
-- **Log And Stop**: Discards duplicate or low-severity events gracefully without escalating.
+
+## Deployment on Render
+
+To deploy GeoSignal on Render as a **Web Service**:
+
+- **Build Command**: `pip install -r requirements.txt`
+- **Start Command**: `python -m uvicorn main:app --host 0.0.0.0 --port $PORT`
+- **Environment Variables**:
+  - `OPENAI_API_KEY`: Your OpenAI key.
+  - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token.
+  - `TAVILY_API_KEY`: Your Tavily API key.
+  - `MONGO_URI`: Your MongoDB connection string (e.g., MongoDB Atlas).
