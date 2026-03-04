@@ -3,6 +3,9 @@ from langchain_openai import ChatOpenAI
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel, Field
 
+import warnings
+warnings.filterwarnings("ignore", message=".*PydanticSerializationUnexpectedValue.*", category=UserWarning, module="pydantic")
+
 from agents.state import AgentState
 
 # -----------------
@@ -52,23 +55,38 @@ class WebSearchOutput(BaseModel):
     pattern_insight: str = Field(description="What both precedents teach us about this situation")
     key_unknown: str = Field(description="What is missing from history that we don't know yet")
 
-class OrchestratorOutput(BaseModel):
-    intent: str = Field(description="'schedule' if they ask to schedule an alert, 'news' for finding news/market info")
 
 # -----------------
 # Node: Orchestrator
 # -----------------
 async def orchestrator_node(state: AgentState, llm: ChatOpenAI):
     """
-    The Orchestrator defines the entry point intent (News or Schedule)
+    The Orchestrator defines the entry point intent (News, Schedule, or General Inquiry)
     """
     print(f"[Orchestrator] Received user message: {state['user_message']}")
-    extractor = llm.with_structured_output(OrchestratorOutput)
-    res: OrchestratorOutput = await extractor.ainvoke([
-        SystemMessage("Determine the user's intent: Is it a request to schedule an alert, or a request to lookup news?"),
+    schema = {
+        "title": "OrchestratorOutput",
+        "description": "Determine the user's intent.",
+        "type": "object",
+        "properties": {
+            "intent": {
+                "type": "string",
+                "description": "'schedule' if they ask to schedule an alert, OR if they ask to modify/update an existing schedule. 'news' for finding breaking/unexpected events, or 'general_query' for explicit questions like 'what is the current price of gold'"
+            }
+        },
+        "required": ["intent"]
+    }
+    
+    extractor = llm.with_structured_output(schema)
+    res = await extractor.ainvoke([
+        SystemMessage("""Determine the user's intent. 
+- Choose 'schedule' to setup a recurring alert OR to pause/modify/update an existing one (e.g., "up the query", "add this to my alert").
+- Choose 'general_query' for answering a direct question or checking a specific current price.
+- Choose 'news' for evaluating a breaking news event or general observation.
+"""),
         HumanMessage(state['user_message'])
     ])
-    return {"intent": res.intent}
+    return {"intent": res["intent"]}
 
 
 # -----------------
@@ -269,6 +287,7 @@ Write a Telegram alert. STRICT rules:
 📊 Asset Impact:
 [List up to 4 affected assets based on context: [Asset]: [▲/▼] [reason, 5 words max]]
 
+[Flexible Context: 1-2 short sentences adding historical precedent insight or addressing the specific user request]
 """),
         HumanMessage(content=context)
     ])
@@ -341,33 +360,120 @@ async def scheduler_agent_node(state: AgentState, llm: ChatOpenAI, tools: dict):
     print("[Scheduler Agent] Scheduling task...")
     set_schedule_tool = tools.get("set_schedule")
     pause_schedule_tool = tools.get("pause_schedule")
+    get_active_tool = tools.get("get_active_schedule")
+    search_news_tool = tools.get("search_news")
+    market_tool = tools.get("get_market_snapshot")
     telegram_tool = tools.get("send_telegram")
     
-    agent_llm = llm.bind_tools([set_schedule_tool, pause_schedule_tool])
+    # We add extra tools so the scheduler can immediately provide the initial answer/snapshot
+    agent_llm = llm.bind_tools([set_schedule_tool, pause_schedule_tool, get_active_tool, search_news_tool, market_tool])
     
     messages = [
-        SystemMessage(f"You schedule tasks. Convert their time request to a cron expression, then call set_schedule tool with chat_id: {state['chat_id']}. If they ask to pause, call pause_schedule. Afterwards, formulate a friendly Telegram response confirming the action."),
+        SystemMessage(f"""You manage scheduled responsibilities for chat_id: {state['chat_id']}. 
+STRICT RULE: Users may only have ONE active schedule at a time. First, you MUST check if they have an active schedule using `get_active_schedule`. 
+- If they try to set a completely new unrelated schedule, and their prompt didn't explicitly confirm replacing the existing one, DO NOT call `set_schedule`. Instead, reply asking if they want to replace their current schedule. 
+- However, if they are explicitly asking to MODIFY, UPDATE, or ADD TO their current schedule query (e.g. "up the query to also include X"), you MUST immediately call `set_schedule` with their new combined query, preserving their previous cron string if they didn't specify a new time. Do NOT ask for confirmation in this case.
+- If they confirm a replacement, or if no schedule exists at all, convert their time request to a 5-part cron expression and call `set_schedule`. 
+
+CRITICAL: If they request a new schedule or modify an existing one, you MUST ALSO USE `search_news` or `get_market_snapshot` to fetch and report the *current* information immediately in your response! 
+
+Finally, YOU MUST ALWAYS formulate and return a final Telegram text response summarizing the action taken using this EXACT structure (MAX 150 words):
+
+🚨 [SCHEDULED: EVENT TYPE / TOPIC]
+
+[1 concise sentence confirming the schedule action]
+
+[1 concise sentence summarizing current news or what happened]
+
+📊 Asset Impact:
+[List up to 4 affected assets based on context: [Asset]: [▲/▼] [reason, 5 words max]]
+
+[1-2 short sentences adding any critical nuance or answers to the user's specific request (Optional)]
+"""),
         HumanMessage(state['user_message'])
     ]
     
-    response = await agent_llm.ainvoke(messages)
-    messages.append(response)
-    
-    # Process tools 
-    for tool_call in response.tool_calls:
-        if tool_call["name"] == "set_schedule":
-            tool_msg = await set_schedule_tool.ainvoke(tool_call["args"])
-        elif tool_call["name"] == "pause_schedule":
-            tool_msg = await pause_schedule_tool.ainvoke(tool_call["args"])
-        else:
-            tool_msg = f"Unknown tool: {tool_call['name']}"
-            
-        messages.append(ToolMessage(content=str(tool_msg), name=tool_call["name"], tool_call_id=tool_call["id"]))
-
-    if response.tool_calls:
+    while True:
         response = await agent_llm.ainvoke(messages)
+        messages.append(response)
         
+        if not response.tool_calls:
+            break
+            
+        # Process tools 
+        for tool_call in response.tool_calls:
+            if tool_call["name"] == "set_schedule":
+                tool_msg = await set_schedule_tool.ainvoke(tool_call["args"])
+            elif tool_call["name"] == "pause_schedule":
+                tool_msg = await pause_schedule_tool.ainvoke(tool_call["args"])
+            elif tool_call["name"] == "get_active_schedule":
+                tool_msg = await get_active_tool.ainvoke(tool_call["args"])
+            elif tool_call["name"] == "search_news":
+                tool_msg = await search_news_tool.ainvoke(tool_call["args"])
+            elif tool_call["name"] == "get_market_snapshot":
+                tool_msg = await market_tool.ainvoke(tool_call["args"])
+            else:
+                tool_msg = f"Unknown tool: {tool_call['name']}"
+                
+            messages.append(ToolMessage(content=str(tool_msg), name=tool_call["name"], tool_call_id=tool_call["id"]))
+
     final_text = response.content
+    if telegram_tool and state.get('chat_id'):
+        await telegram_tool.ainvoke({"chat_id": state['chat_id'], "message": final_text})
+        
+    return {"final_response": final_text}
+
+# -----------------
+# Node: General Query Agent
+# -----------------
+async def general_query_node(state: AgentState, llm: ChatOpenAI, tools: dict):
+    print("[General Query Agent] Answering custom query...")
+    search_news_tool = tools.get("search_news")
+    market_tool = tools.get("get_market_snapshot")
+    telegram_tool = tools.get("send_telegram")
+    
+    agent_llm = llm.bind_tools([search_news_tool, market_tool])
+    
+    messages = [
+        SystemMessage("""You are a helpful financial/geopolitical assistant. Answer the user's specific query concisely. You may use search_news or get_market_snapshot tools if needed. 
+
+You MUST use this exact structure for your answer (MAX 150 words):
+
+🚨 [QUERY: EVENT TYPE / TOPIC]
+
+[1 concise sentence about current findings or context]
+
+[1 concise sentence about why it matters]
+
+📊 Asset Impact:
+[List up to 4 affected assets based on context: [Asset]: [▲/▼] [reason, 5 words max]]
+
+[Flexible Context: 1-2 short sentences directly answering the user's overarching question conversationally with data]
+"""),
+        HumanMessage(state['user_message'])
+    ]
+    
+    while True:
+        response = await agent_llm.ainvoke(messages)
+        messages.append(response)
+        
+        if not response.tool_calls:
+            break
+            
+        # Process tools 
+        for tool_call in response.tool_calls:
+            if tool_call["name"] == "search_news":
+                tool_msg = await search_news_tool.ainvoke(tool_call["args"])
+            elif tool_call["name"] == "get_market_snapshot":
+                tool_msg = await market_tool.ainvoke(tool_call["args"])
+            else:
+                tool_msg = f"Unknown tool: {tool_call['name']}"
+                
+            messages.append(ToolMessage(content=str(tool_msg), name=tool_call["name"], tool_call_id=tool_call["id"]))
+            
+    final_text = response.content
+    final_text += "\n\n💡 Tip: You can create a cron job to monitor this by replying 'Schedule this every X hours/minutes'!"
+    
     if telegram_tool and state.get('chat_id'):
         await telegram_tool.ainvoke({"chat_id": state['chat_id'], "message": final_text})
         

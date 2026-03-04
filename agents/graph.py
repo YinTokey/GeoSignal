@@ -11,12 +11,16 @@ from agents.nodes import (
     websearch_agent_node,
     synthesis_agent_node,
     log_and_stop_node,
-    scheduler_agent_node
+    scheduler_agent_node,
+    general_query_node
 )
 
 def route_after_orchestrator(state: AgentState):
-    if state.get("intent") == "schedule":
+    intent = state.get("intent")
+    if intent == "schedule":
         return ["SchedulerAgent"]
+    elif intent == "general_query":
+        return ["GeneralQueryAgent"]
     return ["NewsAgent"]
 
 def build_agent_graph(llm: ChatOpenAI, raw_tools: list):
@@ -45,12 +49,14 @@ def build_agent_graph(llm: ChatOpenAI, raw_tools: list):
     builder.add_node("SynthesisAgent", partial(synthesis_agent_node, llm=llm, tools=tool_map))
     builder.add_node("LogAndStop", partial(log_and_stop_node, tools=tool_map))
     builder.add_node("SchedulerAgent", partial(scheduler_agent_node, llm=llm, tools=tool_map))
+    builder.add_node("GeneralQueryAgent", partial(general_query_node, llm=llm, tools=tool_map))
     
     # 2. Add Flow Edges
     builder.add_edge(START, "Orchestrator")
-    builder.add_conditional_edges("Orchestrator", route_after_orchestrator, ["SchedulerAgent", "NewsAgent"])
+    builder.add_conditional_edges("Orchestrator", route_after_orchestrator, ["SchedulerAgent", "GeneralQueryAgent", "NewsAgent"])
     
     builder.add_edge("SchedulerAgent", END)
+    builder.add_edge("GeneralQueryAgent", END)
     
     # The NewsAgent branches conditionally based on severity and duplicates
     # route_after_news now returns ["MarketAgent", "WebSearchAgent"] or ["LogAndStop"] directly
