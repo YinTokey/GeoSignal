@@ -86,7 +86,10 @@ async def orchestrator_node(state: AgentState, llm: ChatOpenAI):
 """),
         HumanMessage(state['user_message'])
     ])
-    return {"intent": res["intent"]}
+    # In case the LLM fails to perfectly adhere to the JSON schema, 
+    # fallback to 'news' rather than throwing a KeyError and crashing the backend worker
+    intent = res.get("intent", "news") if isinstance(res, dict) else "news"
+    return {"intent": intent}
 
 
 # -----------------

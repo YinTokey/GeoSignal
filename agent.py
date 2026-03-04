@@ -44,7 +44,7 @@ async def init_agent():
     print(f"Loaded {len(tools)} tools from MCP Server.")
     
     # Initialize LLM
-    llm = ChatOpenAI(model="gpt-5-nano")
+    llm = ChatOpenAI(model="gpt-5-mini")
     
     # Create the Multi-Agent graph
     _reusable_agent = build_agent_graph(llm, tools)
