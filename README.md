@@ -89,6 +89,8 @@ To deploy GeoSignal on Render as a **Web Service**:
 - **Start Command**: `python -m uvicorn main:app --host 0.0.0.0 --port $PORT`
 - **Environment Variables**:
   - `OPENAI_API_KEY`: Your OpenAI key.
-  - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token.
+  - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token. 
+    - *How to get*: Message [@BotFather](https://t.me/BotFather) on Telegram and use the `/newbot` command.
   - `TAVILY_API_KEY`: Your Tavily API key.
   - `MONGO_URI`: Your MongoDB connection string (e.g., MongoDB Atlas).
+    - *Critical Note*: Render Web Services do not have static IP addresses. In your MongoDB Atlas dashboard, go to **Network Access** and add IP `0.0.0.0/0` (Allow Access From Anywhere) so your Render backend can connect successfully.
