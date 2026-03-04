@@ -1,6 +1,6 @@
 # GeoSignal
 
-GeoSignal is an agentic framework designed to process user requests, monitor breaking geopolitcal/financial news, and answer general queries.
+GeoSignal is a multi-agent Telegram bot that uses MCP to schedule recurring jobs to monitor breaking geopolitical/financial news.
 
 ## Agent Architecture & Workflow
 
@@ -31,13 +31,6 @@ graph TD
     SynthesisAgent[Synthesis Agent]:::finalAgent
     END((End)):::startEnd
 
-    %% Tool Dependencies (Visual Only - inside the agents' ReAct loops)
-    subgraph Tools [Available Tools]
-        Tool_Scheduler[(Database Schedules)]:::toolNode
-        Tool_Market[[Market Snapshot]]:::toolNode
-        Tool_News[[Search News]]:::toolNode
-    end
-
     %% Edges
     START --> Orchestrator
     
@@ -45,23 +38,18 @@ graph TD
     Orchestrator -- "Intent: General Query" --> GeneralQueryAgent
     Orchestrator -- "Intent: News" --> NewsAgent
     
-    %% Tool Invocations
-    SchedulerAgent -.->|Uses| Tool_Scheduler
-    SchedulerAgent -.->|Fetches context| Tool_Market
-    SchedulerAgent -.->|Fetches context| Tool_News
-    
-    GeneralQueryAgent -.->|Answers query| Tool_Market
-    GeneralQueryAgent -.->|Answers query| Tool_News
-    
-    NewsAgent -.->|Finds breaking| Tool_News
-    MarketAgent -.->|Checks impact| Tool_Market
-    
     SchedulerAgent --> END
     GeneralQueryAgent --> END
     
-    NewsAgent -- "Duplicate or Low Severity" --> LogAndStop
-    NewsAgent -- "High Severity" --> MarketAgent
-    NewsAgent -- "High Severity" --> WebSearchAgent
+    NewsAgent -- "Duplicate/Low Severity" --> LogAndStop
+    NewsAgent -- "High Severity" --> MarketAgent & WebSearchAgent
+    
+    LogAndStop --> END
+    
+    MarketAgent --> SynthesisAgent
+    WebSearchAgent --> SynthesisAgent
+    
+    SynthesisAgent --> END
     
     LogAndStop --> END
     
