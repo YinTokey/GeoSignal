@@ -94,3 +94,8 @@ To deploy GeoSignal on Render as a **Web Service**:
   - `TAVILY_API_KEY`: Your Tavily API key.
   - `MONGO_URI`: Your MongoDB connection string (e.g., MongoDB Atlas).
     - *Critical Note*: Render Web Services do not have static IP addresses. In your MongoDB Atlas dashboard, go to **Network Access** and add IP `0.0.0.0/0` (Allow Access From Anywhere) so your Render backend can connect successfully.
+
+## Demo
+
+[<img src="https://i9.ytimg.com/vi/cCp0VLTduVE/mqdefault.jpg?sqp=CLS-oc0G-oaymwEmCMACELQB8quKqQMa8AEB-AGQB4AC0AWKAgwIABABGEwgZShHMA8=&rs=AOn4CLC2c_3JDStpegKN-ZxzNziUa48_2Q"
+/>](https://youtu.be/cCp0VLTduVE)
