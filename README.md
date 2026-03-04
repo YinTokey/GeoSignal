@@ -85,5 +85,5 @@ To deploy GeoSignal on Render as a **Web Service**:
 
 ## Demo
 
-[<img src="https://i9.ytimg.com/vi/cCp0VLTduVE/mqdefault.jpg?sqp=CLS-oc0G-oaymwEmCMACELQB8quKqQMa8AEB-AGQB4AC0AWKAgwIABABGEwgZShHMA8=&rs=AOn4CLC2c_3JDStpegKN-ZxzNziUa48_2Q"
+[<img src="https://img.youtube.com/vi/cCp0VLTduVE/hqdefault.jpg"
 />](https://youtu.be/cCp0VLTduVE)
